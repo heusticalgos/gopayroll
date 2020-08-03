@@ -26,7 +26,7 @@ from typing import Tuple
 logger = logging.getLogger(__name__)
 
 # Dirty files matching these regex patterns will be ignored
-ignore_file_patterns = [
+ignore_dirty_file_patterns = [
     re.compile(r'.*README$'),        # README
     re.compile(r'.*\.md$'),          # Markdown
     re.compile(r'.*/docs/.+')        # files in a /docs subfolder
@@ -53,7 +53,7 @@ def load_dirty_dirs(github_home: str) -> set:
     dirty_dirs = set()
     with open(files_json_path) as f:
         for dirty_file in json.load(f):
-            if ignore_file(dirty_file):
+            if ignore_dirty_file(dirty_file):
                 logger.debug(f'Ignoring dirty file {dirty_file}')
                 continue
 
@@ -68,6 +68,13 @@ def load_dirty_dirs(github_home: str) -> set:
             dirty_dirs.add(dirname)
 
     return dirty_dirs
+
+
+def ignore_dirty_file(file_path: str) -> bool:
+    for p in ignore_dirty_file_patterns:
+        if p.match(file_path):
+            return True
+    return False
 
 
 def find_dirty_import_paths(dirty_dirs: set) -> set:
@@ -182,13 +189,6 @@ def run_cmd_with_output(*args: str) -> Tuple[int, str, str]:
     stdout, stderr = process.communicate()
 
     return process.returncode, stdout, stderr
-
-
-def ignore_file(file_path: str) -> bool:
-    for p in ignore_file_patterns:
-        if p.match(file_path):
-            return True
-    return False
 
 
 if __name__ == '__main__':
