@@ -1,8 +1,22 @@
 #!/usr/bin/env python3
+"""
+Description:
+    Call this script after Github Action: lots0logs/gh-action-get-changed-files
 
+    This script assumes there will be a ${GITHUB_HOME}/files.json containing a list of the changed files.
+    This script then determines if there are any go pacakges affected by the change
+    that will require further actions to be taken. Packages without a Makefile are ignored.
+    The set of affected go package directories are then sharded by ${NUM_SHARDS}
+    and outputted to ${GITHUB}/dirty_pkgs-{shard}.txt for use in the next CI step.
+
+Sample Usage:
+    python find_dirty_pkgs.py \
+        ${GITHUB_HOME} ${REPOS_ROOT}/heustics/src ${REPOS_ROOT} ${NUM_SHARDS}
+"""
 import defopt
 import json
 import logging
+import re
 import subprocess
 import sys
 import os
@@ -10,6 +24,13 @@ import os
 from typing import Tuple
 
 logger = logging.getLogger(__name__)
+
+# Dirty files matching these regex patterns will be ignored
+ignore_dirty_file_patterns = [
+    re.compile(r'.*README$'),        # README
+    re.compile(r'.*\.md$'),          # Markdown
+    re.compile(r'.*/docs/.+')        # files in a /docs subfolder
+]
 
 
 def main(github_home: str, src_dir: str, repos_root: str, num_shards: int = 1):
@@ -32,6 +53,10 @@ def load_dirty_dirs(github_home: str) -> set:
     dirty_dirs = set()
     with open(files_json_path) as f:
         for dirty_file in json.load(f):
+            if ignore_dirty_file(dirty_file):
+                logger.debug(f'Ignoring dirty file {dirty_file}')
+                continue
+
             # TODO:
             # Test if dirty_file matches against a map of dirty file regex patterns
             # that returns a set of dirty_dirs to add.
@@ -43,6 +68,13 @@ def load_dirty_dirs(github_home: str) -> set:
             dirty_dirs.add(dirname)
 
     return dirty_dirs
+
+
+def ignore_dirty_file(file_path: str) -> bool:
+    for p in ignore_dirty_file_patterns:
+        if p.match(file_path):
+            return True
+    return False
 
 
 def find_dirty_import_paths(dirty_dirs: set) -> set:
