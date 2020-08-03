@@ -3,6 +3,7 @@
 import defopt
 import json
 import logging
+import re
 import subprocess
 import sys
 import os
@@ -10,6 +11,12 @@ import os
 from typing import Tuple
 
 logger = logging.getLogger(__name__)
+
+ignore_files_pat = [
+    re.compile(r'.*README$'),        # README
+    re.compile(r'.*\.md$'),          # Markdown
+    re.compile(r'.*/docs/.+')        # docs folder
+]
 
 
 def main(github_home: str, src_dir: str, repos_root: str, num_shards: int = 1):
@@ -32,6 +39,10 @@ def load_dirty_dirs(github_home: str) -> set:
     dirty_dirs = set()
     with open(files_json_path) as f:
         for dirty_file in json.load(f):
+            if ignore_file(dirty_file):
+                logger.debug(f'Ignoring dirty file {dirty_file}')
+                continue
+
             # TODO:
             # Test if dirty_file matches against a map of dirty file regex patterns
             # that returns a set of dirty_dirs to add.
@@ -157,6 +168,13 @@ def run_cmd_with_output(*args: str) -> Tuple[int, str, str]:
     stdout, stderr = process.communicate()
 
     return process.returncode, stdout, stderr
+
+
+def ignore_file(file_path) -> bool:
+    for p in ignore_files_pat:
+        if p.match(file_path):
+            return True
+    return False
 
 
 if __name__ == '__main__':
