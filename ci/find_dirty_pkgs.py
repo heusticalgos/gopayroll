@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
+"""
+Description:
+    Call this script after Github Action: lots0logs/gh-action-get-changed-files
 
+    This script assumes there will be a ${GITHUB_HOME}/files.json containing a list of the changed files.
+    This script then determines if there are any go pacakges affected by the change
+    that will require further actions to be taken. Packages without a Makefile are ignored.
+    The set of affected go package directories are then sharded by ${NUM_SHARDS}
+    and outputted to ${GITHUB}/dirty_pkgs-{shard}.txt for use in the next CI step.
+
+Sample Usage:
+    python find_dirty_pkgs.py \
+        ${GITHUB_HOME} ${REPOS_ROOT}/heustics/src ${REPOS_ROOT} ${NUM_SHARDS}
+"""
 import defopt
 import json
 import logging
@@ -12,10 +25,11 @@ from typing import Tuple
 
 logger = logging.getLogger(__name__)
 
-ignore_files_pat = [
+# Dirty files matching these regex patterns will be ignored
+ignore_file_patterns = [
     re.compile(r'.*README$'),        # README
     re.compile(r'.*\.md$'),          # Markdown
-    re.compile(r'.*/docs/.+')        # docs folder
+    re.compile(r'.*/docs/.+')        # files in a /docs subfolder
 ]
 
 
@@ -170,8 +184,8 @@ def run_cmd_with_output(*args: str) -> Tuple[int, str, str]:
     return process.returncode, stdout, stderr
 
 
-def ignore_file(file_path) -> bool:
-    for p in ignore_files_pat:
+def ignore_file(file_path: str) -> bool:
+    for p in ignore_file_patterns:
         if p.match(file_path):
             return True
     return False

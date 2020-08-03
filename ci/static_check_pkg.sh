@@ -1,5 +1,8 @@
 #!/bin/sh
 
+# This script will execute standard Go formatting and security static checks
+# on the given package.
+
 # ------------------------
 #  Dependencies
 # ------------------------
@@ -21,6 +24,9 @@ FLAGS=$2
 IGNORE_DEFER_ERR=${3:-false}
 REPORT_COMMENT=${4:-true}
 
+# ------------------------
+#  Global Variables
+# ------------------------
 COMMENT=""
 SUCCESS=0
 
