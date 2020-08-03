@@ -1,0 +1,44 @@
+name: Pull Request
+on: pull_request
+jobs:
+  findDirtyPkgs:
+    name: Find dirty packages
+    runs-on: ubuntu-18.04
+    steps:
+      - uses: actions/checkout@v2
+      - id: changed_files
+        name: Find changed files
+        uses: lots0logs/gh-action-get-changed-files@2.1.4
+        with:
+          token: ${{ github.token }}
+      - name: Find dirty pkgs
+        env:
+          NUM_SHARDS: 2
+        run: make dirty_pkgs
+      - name: Upload artifact for dirty pkgs
+        uses: actions/upload-artifact@v2
+        with:
+          name: dirty_pkgs
+          path: '~/dirty_pkgs-*.txt'
+  testAndBuildDirtyPkgs:
+    name: Test and build dirty pkgs
+    needs: findDirtyPkgs
+    runs-on: ubuntu-18.04
+    strategy:
+      matrix:
+        shard: [0, 1]
+    steps:
+      - uses: actions/checkout@v2
+      - name: Download artifact for dirty pkgs
+        uses: actions/download-artifact@v2
+        with:
+          name: dirty_pkgs
+          path: '~'
+      - name: Test dirty pkgs
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: ci/make_dirty_pkgs.sh test
+      - name: Build binary of dirty pkgs (if applicable)
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: ci/make_dirty_pkgs.sh build

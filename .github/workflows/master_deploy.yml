@@ -1,0 +1,50 @@
+name: Master Deploy
+on:
+  push:
+    branches:
+      - master
+jobs:
+  findDirtyPkgs:
+    name: Find dirty packages
+    runs-on: ubuntu-18.04
+    steps:
+      - uses: actions/checkout@v2
+      - id: changed_files
+        name: Find changed files
+        uses: lots0logs/gh-action-get-changed-files@2.1.4
+        with:
+          token: ${{ github.token }}
+      - name: Find dirty pkgs
+        env:
+          NUM_SHARDS: 2
+        run: make dirty_pkgs
+      - name: Upload artifact for dirty_pkgs
+        uses: actions/upload-artifact@v2
+        with:
+          name: dirty_pkgs
+          path: '~/dirty_pkgs-*.txt'
+  testAndDeployDirtyPkgs:
+    name: Test and deploy dirty pkgs
+    needs: findDirtyPkgs
+    runs-on: ubuntu-18.04
+    strategy:
+      matrix:
+        shard: [0, 1]
+    steps:
+      - uses: actions/checkout@v2
+      - name: Download artifact for dirty pkgs
+        uses: actions/download-artifact@v2
+        with:
+          name: dirty_pkgs
+          path: '~'
+      - name: Test dirty pkgs
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: ci/make_dirty_pkgs.sh test
+      - name: Push service image of dirty pkgs (if applicable)
+        env:
+          SHARD: ${{ matrix.shard }}
+          DOCKER_REGISTRY: ${{ secrets.DOCKER_REGISTRY }}
+          DOCKER_ACCESS_USER: ${{ secrets.DOCKER_ACCESS_USER }}
+          DOCKER_ACCESS_TOKEN: ${{ secrets.DOCKER_ACCESS_TOKEN }}
+        run: ci/make_dirty_pkgs.sh push_image

@@ -1,0 +1,308 @@
+#
+# Include this dependency file in a service's Makefile
+
+default: test
+
+# ------------------------
+#  Environment Variables
+# ------------------------
+# GITHUB_EVENT_PATH := path to Github workflow event.json file
+# GITHUB_TOKEN := Github token required to make pull request comments
+# DOCKER_REGISTRY := Docker hub registry name
+# DOCKER_ACCESS_USERNAME, DOCKER_ACCCESS_TOKEN := Docker access credentials to given DOCKER_REGISTRY
+# SHARD := worker shard number
+
+docker_registry := ${DOCKER_REGISTRY}
+docker_username := ${DOCKER_ACCESS_USER}
+docker_password := ${DOCKER_ACCESS_TOKEN}
+
+
+# ------------------------
+#  Git & Github Variables
+# ------------------------
+git_hash := $(shell git describe --long --tags --dirty --always)
+
+# So we can mount the github workflow and event path for use by Docker run containers
+github_workflow_path = /github_workflow
+ifneq ($(GITHUB_EVENT_PATH),)
+	github_workflow_mount := $(shell dirname $(GITHUB_EVENT_PATH))
+	github_event_basename := $(shell basename $(GITHUB_EVENT_PATH))
+else
+	github_workflow_mount := /tmp
+	github_event_basename := event.json
+endif
+
+
+# ------------------------
+#  Makefile Variables
+# ------------------------
+
+go_version ?= 1.14.6
+build_image ?= true
+is_library ?= false
+cgo_enabled ?= 0
+go_ldflags ?= -ldflags '-X main.Version=${git_hash}'
+
+org_name ?= heustics
+repos_name ?= $(shell basename `git rev-parse --show-toplevel`)
+repos_src_root := /${repos_name}/${org_name}
+repos_vendor_root := /${repos_name}/vendor
+
+service_dir := $(dir $(abspath $(firstword $(MAKEFILE_LIST))))
+service_name ?= $(shell basename $(service_dir))
+service_mount := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+
+working_dir := $(shell perl -e 'use File::Spec; print File::Spec->abs2rel(@ARGV) . "\n"' ${service_dir} ${service_mount})
+
+## the service target binary and Docker image tags
+image_tag ?= $(shell git rev-parse HEAD)
+output_image := $(repos_name)-$(service_name):$(image_tag)
+latest_image := ${docker_registry}/$(repos_name)-$(service_name):latest
+target_binary ?= ${service_name}
+
+# ------------------------
+#  Docker
+# ------------------------
+
+# Docker image used for building the container required by make targets
+builder_image ?= golang:${go_version}
+
+# older Docker versions require --force while newer versions don't support the tag
+docker_tag_force_arg := $(shell docker tag --help | grep -q -e "--force" && echo "--force")
+# older Docker versions don't support labeling from the CLI
+docker_build_label_arg := $(shell docker build --help | grep -q -e "--label" && echo "--label=\"git_hash=$(git_hash)\"")
+docker_build_label_arg := $(docker_build_label_arg) $(shell docker build --help | grep -q -e "--cache-from" && echo "--cache-from=\"$(latest_image)\"")
+# for supporint the dlv-sh target
+docker_dlv_remote_port := 40000
+docker_service_test_port := 8080
+docker_service_port := 80
+docker_service_name := $(service_name)-$(git_hash)
+
+
+# ------------------------
+#  MySQL Variables
+# ------------------------
+# Settings to start up a MySQL test db Docker container
+# Note that the AWS Aurora compatible MySQL community version is 5.7.12
+ifeq ($(mysql_enable_tests),true)
+mysql_container_name ?= mysql-$(docker_service_name)
+endif
+mysql_network_name ?= $(mysql_container_name)
+mysql_host ?= mysql
+mysql_version ?= 5.7
+mysql_username ?= root
+mysql_password ?= password
+
+ifeq ($(mysql_enable_tests),true)
+extra_test_docker_flags += \
+	--net=$(mysql_network_name) \
+	-e MYSQL_HOST=$(mysql_host) \
+	-e MYSQL_USERNAME=$(mysql_username) \
+	-e MYSQL_PASSWORD=$(mysql_password)
+endif
+
+
+# ------------------------
+#  Build Targets
+# ------------------------
+
+# If the project does not want images built then skip building the target binary
+ifneq ($(is_library),false)
+	build_binary = false
+else ifeq ($(MAKECMDGOALS),build)
+	build_binary = true
+else ifeq ($(build_image),true)
+	build_binary = true
+endif
+
+# Disable building images if there is no Dockerfile
+ifeq ($(wildcard Dockerfile),)
+	build_image = false
+endif
+
+## Build project target binary
+build: clean ${extra_build_deps}
+ifeq ($(build_binary),true)
+	start_time=$$(date +%s) ; \
+	docker run --rm -v ${service_mount}:/${repos_name} \
+		-w /${repos_name}/${working_dir} \
+		-e GOPATH=${repos_vendor_root}:${repos_src_root} \
+		${builder_image} /bin/sh -c "go version ; \
+			go get -v -t -d ./... ; \
+			go mod tidy ; \
+			go build ${go_ldflags} -o ${target_binary} . "
+else
+	@echo "binary building disabled for ${service_name}"
+endif
+
+## Remove project target binary
+clean:
+	rm -f ${target_binary}
+
+## Build Docker image
+image: build
+ifeq ($(build_image),true)
+    # Pull the image if it exists otherwise continue
+	-docker pull $(latest_image)
+	docker build $(docker_build_label_arg) -t ${output_image} .
+	docker tag $(docker_tag_force_arg) $(output_image) $(latest_image)
+else
+	@echo "image building disabled for ${service_name}"
+endif
+
+## Push Docker image to registry
+push_image: image
+ifeq ($(build_image),true)
+	docker login -u ${docker_username} -p ${docker_password} ; \
+	docker tag $(docker_tag_force_arg) ${output_image} ${docker_registry}/${output_image} ; \
+	docker push ${docker_registry}/${output_image} ; \
+	docker push $(latest_image) ;
+else
+	@echo "image building disabled for ${service_name}"
+endif
+
+
+# ------------------------
+#  Development Functions
+# ------------------------
+
+## MySQL test db helpers
+define start-mysql-test-db
+docker network create $(mysql_network_name) || true
+docker rm -vf $(mysql_container_name) 2> /dev/null || true
+docker run -d \
+	--name=$(mysql_container_name) \
+	--net=$(mysql_network_name) \
+	--network-alias=$(mysql_host) \
+	--env=MYSQL_ROOT_PASSWORD=$(mysql_password) \
+	mysql:$(mysql_version) \
+	$(mysqld_flags)
+endef
+
+define stop-mysql-test-db
+docker rm -vf $(mysql_container_name) || true
+docker network rm $(mysql_network_name) || true
+endef
+
+
+# ------------------------
+#  Test Targets
+# ------------------------
+
+## Run go test
+test: ${extra_build_deps}
+ifeq ($(mysql_enable_tests),true)
+	$(start-mysql-test-db)
+endif
+	docker run --rm --name=test-${docker_service_name} \
+		-v ${service_mount}:/${repos_name} \
+		-v ${HOME}/.gocache:/gocache \
+		-v ${github_workflow_mount}:/github_workflow \
+		-w /${repos_name}/${working_dir} \
+		-e GOPATH=${repos_vendor_root}:${repos_src_root} \
+		-e GOBIN=/go/bin \
+		-e CGO_ENABLED=${cgo_enabled} \
+		-e PROJECT_ENV=local \
+		-e SECURE_PATH=/dev/null \
+		-e CONFIG_PATH=/${repos_name}/testconfig.cfg \
+		-e GOCACHE=/gocache/shard${SHARD}/${go_version} \
+		-e GITHUB_EVENT_PATH=/github_workflow/${github_event_basename} \
+		-e GITHUB_TOKEN=${GITHUB_TOKEN} \
+		-e CI_PATH=/${repos_name}/ci \
+    ${extra_test_docker_flags} \
+		${builder_image} /bin/sh -c "apt-get update ; \
+			apt-get -y install jq ; \
+			go version ; \
+			go get -v -t -d ./... ; \
+			/${repos_name}/ci/static_check_pkg.sh && \
+			go test ${go_test_flags} ./... && \
+			go mod tidy"
+ifeq ($(mysql_enable_tests),true)
+	$(stop-mysql-test-db)
+endif
+
+
+# ------------------------
+#  Development Targets
+# ------------------------
+
+## Run a Docker with go delve development environment
+dlv-sh: ${extra_build_deps}
+ifeq ($(mysql_enable_tests),true)
+	$(start-mysql-test-db)
+endif
+	docker run --rm -it --name=dlv-${docker_service_name} \
+		-v ${service_mount}:/${repos_name} \
+		--expose ${docker_dlv_remote_port} \
+		--expose ${docker_service_test_port} \
+		--publish ${docker_dlv_remote_port}:${docker_dlv_remote_port} \
+		--publish ${docker_service_test_port}:${docker_service_port} \
+		--security-opt="apparmor=unconfined" --cap-add=SYS_PTRACE \
+		-v ${HOME}/.gocache:/gocache \
+		-w /${repos_name}/${working_dir} \
+		-e GOPATH=${repos_vendor_root}:${repos_src_root} \
+		-e GOBIN=/go/bin \
+		-e CGO_ENABLED=${cgo_enabled} \
+		-e PROJECT_ENV=local \
+		-e SECURE_PATH=/dev/null \
+		-e CONFIG_PATH=/${repos_name}/testconfig.cfg \
+		-e GOCACHE=/gocache/shard${SHARD}/${go_version} \
+		-e DLV_REMOTE_PORT=${docker_dlv_remote_port} \
+		-e CI_PATH=/${repos_name}/ci \
+		-e GO_TEST_FLAGS="${go_test_flags}" \
+    ${extra_test_docker_flags} \
+		${builder_image} /bin/sh -c "apt-get update ; \
+			apt-get -y install jq ; \
+			go version ; \
+			go get -v -t -d ./... ; \
+			pwd && \
+			ls -la && \
+			sh"
+ifeq ($(mysql_enable_tests),true)
+	$(stop-mysql-test-db)
+endif
+
+## Perform go formatting
+format: ${extra_build_deps}
+	docker run --rm -v ${service_mount}:/${repos_name} \
+		-w /${repos_name}/${working_dir} \
+		-e GOPATH=${repos_vendor_root}:${repos_src_root} \
+		-e GOBIN=/go/bin \
+		-e CGO_ENABLED=${cgo_enabled} \
+		${builder_image} /bin/sh -c "go version ; \
+			go get golang.org/x/tools/cmd/goimports ; \
+			goimports -w ."
+
+## Output test coverage score
+cover:
+	docker run --rm -v ${service_mount}:/${repos_name} \
+		-w /${repos_name}/${working_dir} \
+		-e GOPATH=${repos_vendor_root}:${repos_src_root} \
+		-e GOBIN=/go/bin \
+		-e CGO_ENABLED=0 \
+		-e PROJECT_ENV=local \
+		-e SECURE_PATH=/dev/null \
+		-e CONFIG_PATH=/${repos_name}/testconfig.cfg \
+		-e GOCACHE=/gocache/shard${SHARD}/${go_version} \
+		${builder_image} /bin/sh -c "go version ; \
+			go test -c -coverpkg ./... && \
+			./${service_name}.test -test.coverprofile coverage.cov && \
+			go tool cover -html=./coverage.cov -o coverage.html"
+	open coverage.html
+
+## Output Makefile variables
+vars:
+	@echo "service_mount: ${service_mount}"
+	@echo "service_dir: ${service_dir}"
+	@echo "working_dir: ${working_dir}"
+	@echo "image_tag: ${image_tag}"
+	@echo "output_image: ${output_image}"
+	@echo "target_binary: ${target_binary}"
+	@echo "git_hash: ${git_hash}"
+	@echo "docker_service_name: ${docker_service_name}"
+	@echo "go_version: ${go_version}"
+	@echo "builder_image: ${builder_image}"
+ifeq ($(mysql_enable_tests),true)
+	@echo "mysql_version ${mysql_version}"
+	@echo "mysql_container_name ${mysql_container_name}"
+endif
