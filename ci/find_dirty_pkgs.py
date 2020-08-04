@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 ignore_dirty_file_patterns = [
     re.compile(r'.*README$'),        # README
     re.compile(r'.*\.md$'),          # Markdown
+    re.compile(r'.*LICENSE$'),       # LICENSE
     re.compile(r'.*/docs/.+')        # files in a /docs subfolder
 ]
 
