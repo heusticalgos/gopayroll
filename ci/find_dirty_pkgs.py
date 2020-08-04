@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
 Description:
+
     Call this script after Github Action: lots0logs/gh-action-get-changed-files
 
     This script assumes there will be a ${GITHUB_HOME}/files.json containing a list of the changed files.
-    This script then determines if there are any go pacakges affected by the change
+    This script then determines if there are any go packages affected by the change
     that will require further actions to be taken. Packages without a Makefile are ignored.
+
     The set of affected go package directories are then sharded by ${NUM_SHARDS}
-    and outputted to ${GITHUB}/dirty_pkgs-{shard}.txt for use in the next CI step.
+    and outputted to ${GITHUB_HOME}/dirty_pkgs-{shard}.txt for use in the next CI step.
 
 Sample Usage:
     python find_dirty_pkgs.py \
